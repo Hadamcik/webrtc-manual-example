@@ -1,0 +1,123 @@
+<html>
+<body>
+	<div>
+		<div>	
+			Offer:
+			<button onclick="createOffer()">Generate offer</button>
+			<textarea id="offer-textarea"></textarea>
+		</div>
+		<div>	
+			Answer:
+			<button onclick="createAnswer()">Generate answer</button>
+			<textarea id="answer-textarea"></textarea>
+		</div>
+		<div>
+			<button onclick="connectPeers()">Connect</button>
+		</div>
+	</div>
+	<script>
+		const peerConnection = new RTCPeerConnection({
+		  iceServers: [
+		    { urls: "stun:stun.l.google.com:19302" }  // Google's public STUN server
+		  ]
+		});
+
+		let role;
+		let iceCandidates = [];
+
+		peerConnection.onicecandidate = (event) => {
+			if (event.candidate) {
+				// Collect each ICE candidate
+				iceCandidates.push(event.candidate);
+				console.log("Discovered ICE candidate:", event.candidate.candidate);
+			} else {
+				document.getElementById(role === 'a' ? 'answer-textarea' : 'offer-textarea').value = JSON.stringify({
+					sdp: peerConnection.localDescription,
+					candidates: iceCandidates
+				});
+
+				// ICE gathering is complete
+				console.log("All ICE candidates have been gathered.");
+			}
+		};
+
+		peerConnection.onconnectionstatechange = () => {
+			console.log("Connection state changed to:", peerConnection.connectionState);
+			if (peerConnection.connectionState === 'connected') {
+				console.log("Peers are successfully connected!");
+			}
+		};
+
+		const dataChannel = peerConnection.createDataChannel("myDataChannel");
+
+		function createOffer() {
+			role = 'o'
+			peerConnection.createOffer()
+			.then(offer => {				
+				// Set the local description with the offer
+				return peerConnection.setLocalDescription(offer);
+			})
+			.then(() => {
+				console.log("SDP Offer created:", peerConnection.localDescription.sdp);
+				// The ICE candidates will continue gathering after this
+			})
+			.catch(error => {
+				console.error("Error creating offer:", error);
+			});
+		}
+
+		function createAnswer() {
+			role = 'a'
+			// Parse the offer string into JSON
+			const offerJson = JSON.parse(document.getElementById('offer-textarea').value);
+
+			const offer = new RTCSessionDescription(offerJson.sdp);
+			peerConnection.setRemoteDescription(offer);
+
+			// Add remote ICE candidates if provided
+			if (offerJson.candidates) {
+				for (const candidate of offerJson.candidates) {
+					peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+				}
+			}
+			peerConnection.createAnswer()
+			.then(answer => {				
+				// Set the local description with the answer
+				return peerConnection.setLocalDescription(answer);
+			})
+			.then(() => {
+				console.log("SDP Answer created:", peerConnection.localDescription.sdp);
+				// The ICE candidates will continue gathering after this
+			})
+			.catch(error => {
+				console.error("Error creating answer:", error);
+			});
+		}
+
+		function connectPeers() {
+			const answerJson = JSON.parse(document.getElementById('answer-textarea').value);
+			const offerJson = JSON.parse(document.getElementById('offer-textarea').value);
+
+			if (role === 'o') {
+				const answerDesc = new RTCSessionDescription(answerJson.sdp);
+				peerConnection.setRemoteDescription(answerDesc);
+
+				if (answerJson.candidates) {
+					answerJson.candidates.forEach(candidate => {
+						peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+					});
+				}
+			} else if (role === 'a') {
+				const offerDesc = new RTCSessionDescription(offerJson.sdp);
+				peerConnection.setRemoteDescription(offerDesc);
+
+				if (offerJson.candidates) {
+					offerJson.candidates.forEach(candidate => {
+						peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+					});
+				}
+			}
+		}
+	</script>
+</body>
+</html>
