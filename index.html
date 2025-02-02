@@ -1,12 +1,12 @@
 <html>
 <body>
 	<div>
-		<div>	
+		<div> 
 			Offer:
 			<button onclick="createOffer()">Generate offer</button>
 			<textarea id="offer-textarea"></textarea>
 		</div>
-		<div>	
+		<div> 
 			Answer:
 			<button onclick="createAnswer()">Generate answer</button>
 			<textarea id="answer-textarea"></textarea>
@@ -24,12 +24,13 @@
 
 		let role;
 		let iceCandidates = [];
+		let remoteCandidates = [];
 
 		peerConnection.onicecandidate = (event) => {
 			if (event.candidate) {
 				// Collect each ICE candidate
 				iceCandidates.push(event.candidate);
-				console.log("Discovered ICE candidate:", event.candidate.candidate);
+				console.log("Discovered ICE candidate:", event.candidate);
 			} else {
 				document.getElementById(role === 'a' ? 'answer-textarea' : 'offer-textarea').value = JSON.stringify({
 					sdp: peerConnection.localDescription,
@@ -45,15 +46,36 @@
 			console.log("Connection state changed to:", peerConnection.connectionState);
 			if (peerConnection.connectionState === 'connected') {
 				console.log("Peers are successfully connected!");
+				logSelectedCandidatePair();
 			}
 		};
+
+		function logSelectedCandidatePair() {
+			peerConnection.getStats().then(stats => {
+				let localCandidate, remoteCandidate;
+				stats.forEach(report => {
+					if (report.type === "candidate-pair" && report.state === "succeeded") {
+						localCandidate = stats.get(report.localCandidateId);
+						remoteCandidate = stats.get(report.remoteCandidateId);
+
+						const matchedLocal = iceCandidates.find(c => c.foundation === localCandidate.foundation);
+						const matchedRemote = remoteCandidates.find(c => c.foundation === remoteCandidate.foundation);
+
+						console.log("Selected Candidate Pair:", {
+							local: matchedLocal || localCandidate,
+							remote: matchedRemote || remoteCandidate
+						});
+					}
+				});
+			});
+		}
 
 		const dataChannel = peerConnection.createDataChannel("myDataChannel");
 
 		function createOffer() {
-			role = 'o'
+			role = 'o';
 			peerConnection.createOffer()
-			.then(offer => {				
+			.then(offer => { 
 				// Set the local description with the offer
 				return peerConnection.setLocalDescription(offer);
 			})
@@ -67,7 +89,7 @@
 		}
 
 		function createAnswer() {
-			role = 'a'
+			role = 'a';
 			// Parse the offer string into JSON
 			const offerJson = JSON.parse(document.getElementById('offer-textarea').value);
 
@@ -77,11 +99,13 @@
 			// Add remote ICE candidates if provided
 			if (offerJson.candidates) {
 				for (const candidate of offerJson.candidates) {
-					peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+					const rtcCandidate = new RTCIceCandidate(candidate);
+					remoteCandidates.push(rtcCandidate);
+					peerConnection.addIceCandidate(rtcCandidate);
 				}
 			}
 			peerConnection.createAnswer()
-			.then(answer => {				
+			.then(answer => { 
 				// Set the local description with the answer
 				return peerConnection.setLocalDescription(answer);
 			})
@@ -104,7 +128,9 @@
 
 				if (answerJson.candidates) {
 					answerJson.candidates.forEach(candidate => {
-						peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+						const rtcCandidate = new RTCIceCandidate(candidate);
+						remoteCandidates.push(rtcCandidate);
+						peerConnection.addIceCandidate(rtcCandidate);
 					});
 				}
 			} else if (role === 'a') {
@@ -113,7 +139,9 @@
 
 				if (offerJson.candidates) {
 					offerJson.candidates.forEach(candidate => {
-						peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+						const rtcCandidate = new RTCIceCandidate(candidate);
+						remoteCandidates.push(rtcCandidate);
+						peerConnection.addIceCandidate(rtcCandidate);
 					});
 				}
 			}
