@@ -11,6 +11,7 @@
 	let connectionCount = 0;
 	const connections = {};
 	const connectionsByOrigin = {};
+	const peerId = crypto.randomUUID(); // Unique ID for each peer
 
 	function addNewConnection() {
 		connectionCount++;
@@ -19,7 +20,7 @@
 		const connectionDiv = document.createElement('div');
 		connectionDiv.id = connectionId;
 		connectionDiv.innerHTML = `
-				<h3>Connection ${connectionCount}</h3>
+				<h3>Connection <span id="${connectionId}-peer-id">${connectionCount}</span></h3>
 				<div>
 					Offer:
 					<button onclick="createOffer('${connectionId}')">Generate offer</button>
@@ -51,7 +52,8 @@
 			iceCandidates: [],
 			remoteCandidates: [],
 			role: null,
-			dataChannelInitialized: false
+			dataChannelInitialized: false,
+			nodeId: null,
 		};
 
 		const conn = connections[connectionId];
@@ -116,8 +118,9 @@
 
 	function onDataChannelOpen(connectionId) {
 		console.log(`Data channel open for ${connectionId}`);
+		requestPeerId(connectionId);
 		if (connections[connectionId].role === 'o') {
-			requestPeers(connectionId);  // Only the offerer requests peers automatically
+			requestPeers(connectionId, );  // Only the offerer requests peers automatically
 		}
 	}
 
@@ -176,12 +179,20 @@
 				answer: message.answer,
 				from: connectionId
 			}));
+		} else if (message.type === 'REQUEST_PEER_ID') {
+			console.log(`Peer ${connectionId} received REQUEST_PEER_ID`);
+			connections[connectionId].dataChannel.send(JSON.stringify({ type: 'RESPOND_PEER_ID', peerId: peerId }));
+		} else if (message.type === 'RESPOND_PEER_ID') {
+			console.log(`Peer ${connectionId} received RESPOND_PEER_ID`);
+			connections[connectionId].peerId = message.peerId;
+			document.getElementById(`${connectionId}-peer-id`).innerText = message.peerId;
 		} else if (message.type === 'REQUEST_OFFERS') {
 			console.log(`Peer ${connectionId} received REQUEST_OFFERS`);
 			Object.keys(connections).forEach(id => {
-				if (id !== connectionId && connections[id].peerConnection.connectionState === 'connected') {
+				const conn = connections[id];
+				if (id !== connectionId && conn.peerConnection.connectionState === 'connected' && ! message.excludedPeers.includes(conn.peerId)) {
 					console.log(`Forwarding request for offers to peer connection ${id}`);
-					connections[id].dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFER_FROM_PEER', requester: connectionId }));
+					conn.dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFER_FROM_PEER', requester: connectionId }));
 				}
 			});
 		} else if (message.type === 'REQUEST_OFFER_FROM_PEER') {
@@ -220,12 +231,27 @@
 		}
 	}
 
+	function requestPeerId(connectionId) {
+		const conn = connections[connectionId];
+		if (conn.dataChannel && conn.peerConnection.connectionState === 'connected') {
+			console.log(`Requesting peers via connection ${connectionId}`);
+			if (conn.dataChannel.readyState === 'open') {
+				conn.dataChannel.send(JSON.stringify({ type: 'REQUEST_PEER_ID' }));
+				console.log(`REQUEST_PEER_ID message sent from ${connectionId}`);
+			} else {
+				console.error(`Data channel is not open for ${connectionId}, cannot send REQUEST_PEER_ID.`);
+			}
+		} else {
+			console.error(`Cannot request peer ID. Connection ${connectionId} is not established.`);
+		}
+	}
+
 	function requestPeers(connectionId) {
 		const conn = connections[connectionId];
 		if (conn.dataChannel && conn.peerConnection.connectionState === 'connected') {
 			console.log(`Requesting peers via connection ${connectionId}`);
 			if (conn.dataChannel.readyState === 'open') {
-				conn.dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFERS' }));
+				conn.dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFERS', excludedPeers: getConnectedPeerIds()}));
 				console.log(`REQUEST_OFFERS message sent from ${connectionId}`);
 			} else {
 				console.error(`Data channel is not open for ${connectionId}, cannot send REQUEST_OFFERS.`);
@@ -246,6 +272,7 @@
 			}, 100); // Check every 100ms
 		});
 	}
+
 	function waitForOffer(connectionId) {
 		return new Promise((resolve) => {
 			const interval = setInterval(() => {
@@ -256,6 +283,10 @@
 				}
 			}, 100); // Check every 100ms
 		});
+	}
+
+	function getConnectedPeerIds() {
+		return Object.values(connections).map(conn => conn.peerId);
 	}
 
 	function createOffer(connectionId) {
