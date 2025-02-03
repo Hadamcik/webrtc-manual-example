@@ -1,151 +1,328 @@
 <html>
 <body>
-	<div>
-		<div> 
-			Offer:
-			<button onclick="createOffer()">Generate offer</button>
-			<textarea id="offer-textarea"></textarea>
-		</div>
-		<div> 
-			Answer:
-			<button onclick="createAnswer()">Generate answer</button>
-			<textarea id="answer-textarea"></textarea>
-		</div>
-		<div>
-			<button onclick="connectPeers()">Connect</button>
-		</div>
-	</div>
-	<script>
-		const peerConnection = new RTCPeerConnection({
-		  iceServers: [
-		    { urls: "stun:stun.l.google.com:19302" }  // Google's public STUN server
-		  ]
-		});
+<div id="connections-container"></div>
+<button onclick="addNewConnection()">Establish New Connection</button>
+<div>
+	<h2>Active Connections</h2>
+	<ul id="active-connections"></ul>
+</div>
 
-		let role;
-		let iceCandidates = [];
-		let remoteCandidates = [];
+<script>
+	let connectionCount = 0;
+	const connections = {};
+	const connectionsByOrigin = {};
 
-		peerConnection.onicecandidate = (event) => {
+	function addNewConnection() {
+		connectionCount++;
+		const connectionId = `connection-${connectionCount}`;
+
+		const connectionDiv = document.createElement('div');
+		connectionDiv.id = connectionId;
+		connectionDiv.innerHTML = `
+				<h3>Connection ${connectionCount}</h3>
+				<div>
+					Offer:
+					<button onclick="createOffer('${connectionId}')">Generate offer</button>
+					<textarea id="${connectionId}-offer-textarea"></textarea>
+				</div>
+				<div>
+					Answer:
+					<button onclick="createAnswer('${connectionId}')">Generate answer</button>
+					<textarea id="${connectionId}-answer-textarea"></textarea>
+				</div>
+				<div>
+					<button onclick="connectPeers('${connectionId}')">Connect</button>
+				</div>
+				<div>
+					<button onclick="requestPeers('${connectionId}')">Request Peers</button>
+				</div>
+				<hr>
+			`;
+
+		document.getElementById('connections-container').appendChild(connectionDiv);
+
+		initializePeerConnection(connectionId);
+	}
+
+	function initializePeerConnection(connectionId) {
+		connections[connectionId] = {
+			peerConnection: new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+			dataChannel: null,
+			iceCandidates: [],
+			remoteCandidates: [],
+			role: null,
+			dataChannelInitialized: false
+		};
+
+		const conn = connections[connectionId];
+
+		conn.peerConnection.onicecandidate = (event) => {
 			if (event.candidate) {
-				// Collect each ICE candidate
-				iceCandidates.push(event.candidate);
-				console.log("Discovered ICE candidate:", event.candidate);
+				conn.iceCandidates.push(event.candidate);
+				console.log(`Discovered ICE candidate for ${connectionId}:`, event.candidate);
 			} else {
-				document.getElementById(role === 'a' ? 'answer-textarea' : 'offer-textarea').value = JSON.stringify({
-					sdp: peerConnection.localDescription,
-					candidates: iceCandidates
+				document.getElementById(`${connectionId}-${conn.role === 'a' ? 'answer' : 'offer'}-textarea`).value = JSON.stringify({
+					sdp: conn.peerConnection.localDescription,
+					candidates: conn.iceCandidates
+				});
+				console.log(`All ICE candidates gathered for ${connectionId}.`);
+			}
+		};
+
+		conn.peerConnection.onconnectionstatechange = () => {
+			console.log(`Connection ${connectionId} state changed to:`, conn.peerConnection.connectionState);
+			if (conn.peerConnection.connectionState === 'connected') {
+				console.log(`Peers are successfully connected for ${connectionId}!`);
+				displayActiveConnections();
+				if (conn.role === 'o') {
+					setupDataChannel(connectionId); // Open data channel after peer connection is established
+				}
+			}
+		};
+
+		conn.peerConnection.ondatachannel = (event) => {
+			console.log(`Data channel received for ${connectionId}`);
+			if (!conn.dataChannelInitialized) {
+				conn.dataChannel = event.channel;
+				conn.dataChannelInitialized = true;
+				setupDataChannelEvents(connectionId);
+			}
+		};
+	}
+
+	function setupDataChannel(connectionId) {
+		const conn = connections[connectionId];
+		if (conn.role === 'o' && !conn.dataChannelInitialized) {
+			conn.dataChannel = conn.peerConnection.createDataChannel("dataChannel", { ordered: true, reliable: true });
+			conn.dataChannelInitialized = true;
+			console.log(`Data channel created by offerer for ${connectionId}`);
+			setupDataChannelEvents(connectionId);
+		}
+	}
+
+	function setupDataChannelEvents(connectionId) {
+		console.log(`Setting up data channel events for ${connectionId}`);
+		const conn = connections[connectionId];
+		if (conn.dataChannel) {
+			conn.dataChannel.onopen = () => onDataChannelOpen(connectionId);
+			conn.dataChannel.onclose = () => onDataChannelClose(connectionId);
+			conn.dataChannel.onerror = (event) => onDataChannelError(connectionId, event);
+			conn.dataChannel.onmessage = (event) => onDataChannelMessage(connectionId, event);
+			console.log(`Data channel events set for ${connectionId}`);
+		} else {
+			console.log(`No data channel available to set events for ${connectionId}`);
+		}
+	}
+
+	function onDataChannelOpen(connectionId) {
+		console.log(`Data channel open for ${connectionId}`);
+		if (connections[connectionId].role === 'o') {
+			requestPeers(connectionId);  // Only the offerer requests peers automatically
+		}
+	}
+
+	function onDataChannelClose(connectionId) {
+		console.log(`Data channel closed for ${connectionId}`);
+	}
+
+	function onDataChannelError(connectionId, event) {
+		console.error(`Data channel error for ${connectionId}:`, event);
+	}
+
+	function onDataChannelMessage(connectionId, event) {
+		console.log(`Message received on ${connectionId}:`, event.data);
+		const message = JSON.parse(event.data);
+		const conn = connections[connectionId];
+
+		if (message.type === 'PROVIDE_ANSWER_FORWARD') {
+			console.log(`Received forwarded answer from ${message.from} at ${connectionId}`);
+			console.log(`Answer:`, message.answer);
+			const matchingConnectionId = connectionsByOrigin[connectionId + message.from];
+			if (!matchingConnectionId) {
+				console.error(`No matching connection found for ${message.from}`);
+				return;
+			}
+			document.getElementById(`${matchingConnectionId}-answer-textarea`).value = JSON.stringify(message.answer);
+			connectPeers(matchingConnectionId);
+		} else if (message.type === 'PROVIDE_OFFER_FORWARD') {
+			console.log(`Received forwarded offer from ${message.from} at ${connectionId}`);
+
+			// Create a new peer connection for this forwarded offer
+			addNewConnection();
+			const newConnectionId = `connection-${connectionCount}`;
+			const newConn = connections[newConnectionId];
+			newConn.role = 'a';
+			document.getElementById(`${newConnectionId}-offer-textarea`).value = JSON.stringify(message.offer);
+			createAnswer(newConnectionId)
+				.then(() => {
+					waitForAnswer(newConnectionId).then(() => {
+						const answerText = document.getElementById(`${newConnectionId}-answer-textarea`).value;
+						console.log(`Answer text:`, answerText);
+						const responseAnswerData = {
+							type: 'RESPOND_ANSWER',
+							answer: JSON.parse(answerText),
+							to: message.from
+						};
+						console.log(`Sending response answer to ${message.from} from ${connectionId}`);
+						console.log(`Answer data:`, responseAnswerData);
+						conn.dataChannel.send(JSON.stringify(responseAnswerData));
+					});
 				});
 
-				// ICE gathering is complete
-				console.log("All ICE candidates have been gathered.");
-			}
-		};
-
-		peerConnection.onconnectionstatechange = () => {
-			console.log("Connection state changed to:", peerConnection.connectionState);
-			if (peerConnection.connectionState === 'connected') {
-				console.log("Peers are successfully connected!");
-				logSelectedCandidatePair();
-			}
-		};
-
-		function logSelectedCandidatePair() {
-			peerConnection.getStats().then(stats => {
-				let localCandidate, remoteCandidate;
-				stats.forEach(report => {
-					if (report.type === "candidate-pair" && report.state === "succeeded") {
-						localCandidate = stats.get(report.localCandidateId);
-						remoteCandidate = stats.get(report.remoteCandidateId);
-
-						const matchedLocal = iceCandidates.find(c => c.foundation === localCandidate.foundation);
-						const matchedRemote = remoteCandidates.find(c => c.foundation === remoteCandidate.foundation);
-
-						console.log("Selected Candidate Pair:", {
-							local: matchedLocal || localCandidate,
-							remote: matchedRemote || remoteCandidate
+		} else if (message.type === 'RESPOND_ANSWER') {
+			console.log(`Peer ${connectionId} received RESPOND_ANSWER`);
+			connections[message.to].dataChannel.send(JSON.stringify({
+				type: 'PROVIDE_ANSWER_FORWARD',
+				answer: message.answer,
+				from: connectionId
+			}));
+		} else if (message.type === 'REQUEST_OFFERS') {
+			console.log(`Peer ${connectionId} received REQUEST_OFFERS`);
+			Object.keys(connections).forEach(id => {
+				if (id !== connectionId && connections[id].peerConnection.connectionState === 'connected') {
+					console.log(`Forwarding request for offers to peer connection ${id}`);
+					connections[id].dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFER_FROM_PEER', requester: connectionId }));
+				}
+			});
+		} else if (message.type === 'REQUEST_OFFER_FROM_PEER') {
+			console.log(`Received REQUEST_OFFER_FROM_PEER from ${message.requester} at ${connectionId}`);
+			addNewConnection();
+			const newConnectionId = `connection-${connectionCount}`;
+			connectionsByOrigin[connectionId + message.requester] = newConnectionId;
+			const newConn = connections[newConnectionId];
+			newConn.role = 'o';
+			createOffer(newConnectionId)
+					.then(() => {
+						waitForOffer(newConnectionId).then(() => {
+							conn.dataChannel.send(JSON.stringify({
+								type: 'PROVIDE_OFFER',
+								offer: JSON.parse(document.getElementById(`${newConnectionId}-offer-textarea`).value),
+								to: message.requester
+							}));
+							console.log(`Sent offer to ${message.requester} from ${connectionId}`);
 						});
-					}
-				});
-			});
-		}
-
-		const dataChannel = peerConnection.createDataChannel("myDataChannel");
-
-		function createOffer() {
-			role = 'o';
-			peerConnection.createOffer()
-			.then(offer => { 
-				// Set the local description with the offer
-				return peerConnection.setLocalDescription(offer);
-			})
-			.then(() => {
-				console.log("SDP Offer created:", peerConnection.localDescription.sdp);
-				// The ICE candidates will continue gathering after this
-			})
-			.catch(error => {
-				console.error("Error creating offer:", error);
-			});
-		}
-
-		function createAnswer() {
-			role = 'a';
-			// Parse the offer string into JSON
-			const offerJson = JSON.parse(document.getElementById('offer-textarea').value);
-
-			const offer = new RTCSessionDescription(offerJson.sdp);
-			peerConnection.setRemoteDescription(offer);
-
-			// Add remote ICE candidates if provided
-			if (offerJson.candidates) {
-				for (const candidate of offerJson.candidates) {
-					const rtcCandidate = new RTCIceCandidate(candidate);
-					remoteCandidates.push(rtcCandidate);
-					peerConnection.addIceCandidate(rtcCandidate);
-				}
-			}
-			peerConnection.createAnswer()
-			.then(answer => { 
-				// Set the local description with the answer
-				return peerConnection.setLocalDescription(answer);
-			})
-			.then(() => {
-				console.log("SDP Answer created:", peerConnection.localDescription.sdp);
-				// The ICE candidates will continue gathering after this
-			})
-			.catch(error => {
-				console.error("Error creating answer:", error);
-			});
-		}
-
-		function connectPeers() {
-			const answerJson = JSON.parse(document.getElementById('answer-textarea').value);
-			const offerJson = JSON.parse(document.getElementById('offer-textarea').value);
-
-			if (role === 'o') {
-				const answerDesc = new RTCSessionDescription(answerJson.sdp);
-				peerConnection.setRemoteDescription(answerDesc);
-
-				if (answerJson.candidates) {
-					answerJson.candidates.forEach(candidate => {
-						const rtcCandidate = new RTCIceCandidate(candidate);
-						remoteCandidates.push(rtcCandidate);
-						peerConnection.addIceCandidate(rtcCandidate);
 					});
+		} else if (message.type === 'PROVIDE_OFFER') {
+			console.log(`Received PROVIDE_OFFER from ${message.to} at ${connectionId}`);
+			Object.keys(connections).forEach(id => {
+				if (id === message.to && connections[id].dataChannel.readyState === 'open') {
+					connections[id].dataChannel.send(JSON.stringify({ type: 'PROVIDE_OFFER_FORWARD', offer: message.offer, from: connectionId }));
+					console.log(`Forwarded offer from ${connectionId} to ${id}`);
 				}
-			} else if (role === 'a') {
-				const offerDesc = new RTCSessionDescription(offerJson.sdp);
-				peerConnection.setRemoteDescription(offerDesc);
-
-				if (offerJson.candidates) {
-					offerJson.candidates.forEach(candidate => {
-						const rtcCandidate = new RTCIceCandidate(candidate);
-						remoteCandidates.push(rtcCandidate);
-						peerConnection.addIceCandidate(rtcCandidate);
-					});
-				}
+			});
+		} else if (message.type === 'ANSWER') {
+			if (message.answer) {
+				console.log(`Received answer from ${message.to} at ${connectionId}`);
+				connectPeers(connectionId);
+			} else {
+				console.error(`Received undefined answer for ${connectionId}`);
 			}
 		}
-	</script>
+	}
+
+	function requestPeers(connectionId) {
+		const conn = connections[connectionId];
+		if (conn.dataChannel && conn.peerConnection.connectionState === 'connected') {
+			console.log(`Requesting peers via connection ${connectionId}`);
+			if (conn.dataChannel.readyState === 'open') {
+				conn.dataChannel.send(JSON.stringify({ type: 'REQUEST_OFFERS' }));
+				console.log(`REQUEST_OFFERS message sent from ${connectionId}`);
+			} else {
+				console.error(`Data channel is not open for ${connectionId}, cannot send REQUEST_OFFERS.`);
+			}
+		} else {
+			console.error(`Cannot request peers. Connection ${connectionId} is not established.`);
+		}
+	}
+
+	function waitForAnswer(connectionId) {
+		return new Promise((resolve) => {
+			const interval = setInterval(() => {
+				const answerText = document.getElementById(`${connectionId}-answer-textarea`).value;
+				if (answerText && answerText.trim().length > 0) {
+					clearInterval(interval);
+					resolve();
+				}
+			}, 100); // Check every 100ms
+		});
+	}
+	function waitForOffer(connectionId) {
+		return new Promise((resolve) => {
+			const interval = setInterval(() => {
+				const offerText = document.getElementById(`${connectionId}-offer-textarea`).value;
+				if (offerText && offerText.trim().length > 0) {
+					clearInterval(interval);
+					resolve();
+				}
+			}, 100); // Check every 100ms
+		});
+	}
+
+	function createOffer(connectionId) {
+		const conn = connections[connectionId];
+		conn.role = 'o';
+		setupDataChannel(connectionId)
+		return conn.peerConnection.createOffer()
+				.then(offer => conn.peerConnection.setLocalDescription(offer))
+				.then(() => conn.peerConnection.localDescription)
+				.catch(error => console.error(`Error creating offer for ${connectionId}:`, error));
+	}
+
+	function createAnswer(connectionId, offer) {
+		const conn = connections[connectionId];
+		conn.role = 'a';
+
+		if (!offer) {
+			const offerText = document.getElementById(`${connectionId}-offer-textarea`).value;
+			if (!offerText) {
+				console.error(`No offer found for ${connectionId}`);
+				return Promise.reject(new Error(`No offer found for ${connectionId}`));
+			}
+			offer = JSON.parse(offerText).sdp;
+		}
+
+		if (!offer || !offer.type || !offer.sdp) {
+			console.error(`Invalid offer for ${connectionId}:`, offer);
+			return Promise.reject(new Error(`Invalid offer for ${connectionId}`));
+		}
+
+		return conn.peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
+				.then(() => conn.peerConnection.createAnswer())
+				.then(answer => conn.peerConnection.setLocalDescription(answer))
+				.then(() => conn.peerConnection.localDescription)
+				.catch(error => console.error(`Error creating answer for ${connectionId}:`, error));
+	}
+
+	function connectPeers(connectionId) {
+		const conn = connections[connectionId];
+		const answerText = document.getElementById(`${connectionId}-answer-textarea`).value;
+
+		if (!answerText) {
+			console.error(`No answer found in textarea for ${connectionId}`);
+			return;
+		}
+
+		const answer = JSON.parse(answerText).sdp;
+
+		if (answer && answer.type && answer.sdp) {
+			conn.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+		} else {
+			console.error(`Invalid answer for ${connectionId}:`, answer);
+		}
+	}
+
+	function displayActiveConnections() {
+		const activeConnectionsList = document.getElementById('active-connections');
+		activeConnectionsList.innerHTML = '';
+
+		Object.keys(connections).forEach(id => {
+			if (connections[id].peerConnection.connectionState === 'connected') {
+				const listItem = document.createElement('li');
+				listItem.textContent = `Active Connection: ${id}`;
+				activeConnectionsList.appendChild(listItem);
+			}
+		});
+	}
+</script>
 </body>
 </html>
